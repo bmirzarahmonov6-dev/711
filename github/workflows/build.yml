@@ -1,1 +1,313 @@
+name: APK yigʻish
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Loyiha fayllarini yaratish
+        run: |
+          mkdir proj && cd proj
+          cat > settings.gradle.kts <<'END_0'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "ZikrBubble"
+          END_0
+          cat > build.gradle.kts <<'END_1'
+          plugins {
+              id("com.android.application") version "8.5.2"
+              id("org.jetbrains.kotlin.android") version "1.9.24"
+          }
+          android {
+              namespace = "uz.zikr.bubble"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "uz.zikr.bubble"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              sourceSets {
+                  getByName("main") {
+                      manifest.srcFile("AndroidManifest.xml")
+                      java.setSrcDirs(listOf("."))
+                  }
+              }
+          }
+          END_1
+          cat > gradle.properties <<'END_2'
+          org.gradle.jvmargs=-Xmx2g
+          END_2
+          cat > AndroidManifest.xml <<'END_3'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <application
+                  android:label="Zikr"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".BubbleService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="floating_counter" />
+                  </service>
+              </application>
+          </manifest>
+          END_3
+          cat > MainActivity.kt <<'END_4'
+          package uz.zikr.bubble
 
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val d = resources.displayMetrics.density
+                  val p = (24 * d).toInt()
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setPadding(p, p, p, p)
+                  }
+                  col.addView(TextView(this).apply {
+                      text = "Zikr sanagich"
+                      textSize = 24f
+                      setTextColor(Color.parseColor("#0E7F68"))
+                      gravity = Gravity.CENTER
+                  })
+                  col.addView(TextView(this).apply {
+                      text = "Yashil doira barcha ilovalar ustida turadi.\nBosish: +1  ·  Surish: koʻchirish  ·  Uzoq bosish: nolga"
+                      gravity = Gravity.CENTER
+                      setPadding(0, p / 2, 0, p)
+                  })
+                  col.addView(Button(this).apply {
+                      text = "Doirani yoqish"
+                      setOnClickListener { start() }
+                  })
+                  col.addView(Button(this).apply {
+                      text = "Doirani oʻchirish"
+                      setOnClickListener { stopService(Intent(this@MainActivity, BubbleService::class.java)) }
+                  })
+                  setContentView(col)
+              }
+
+              private fun start() {
+                  if (!Settings.canDrawOverlays(this)) {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                      return
+                  }
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                  }
+                  startForegroundService(Intent(this, BubbleService::class.java))
+              }
+          }
+          END_4
+          cat > BubbleService.kt <<'END_5'
+          package uz.zikr.bubble
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.os.IBinder
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.util.TypedValue
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import kotlin.math.abs
+
+          class BubbleService : Service() {
+              private lateinit var wm: WindowManager
+              private lateinit var prefs: SharedPreferences
+              private lateinit var num: TextView
+              private var bubble: View? = null
+              private var count = 0
+              private val target = 33
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == "STOP") {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  startForeground(1, notification())
+                  if (bubble == null) addBubble()
+                  return START_STICKY
+              }
+
+              private fun notification(): Notification {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(NotificationChannel("zikr", "Zikr", NotificationManager.IMPORTANCE_LOW))
+                  val stop = PendingIntent.getService(
+                      this, 0, Intent(this, BubbleService::class.java).setAction("STOP"), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  return Notification.Builder(this, "zikr")
+                      .setSmallIcon(android.R.drawable.star_on)
+                      .setContentTitle("Zikr sanagich ishlayapti")
+                      .addAction(0, "Toʻxtatish", stop)
+                      .build()
+              }
+
+              private fun addBubble() {
+                  wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  prefs = getSharedPreferences("zikr", MODE_PRIVATE)
+                  count = prefs.getInt("count", 0)
+                  val d = resources.displayMetrics.density
+                  val size = (84 * d).toInt()
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      background = GradientDrawable(
+                          GradientDrawable.Orientation.TL_BR,
+                          intArrayOf(0xFF1DB881.toInt(), 0xFF0E7F68.toInt())
+                      ).apply {
+                          shape = GradientDrawable.OVAL
+                          setStroke((3 * d).toInt(), 0xFF4CD0A0.toInt())
+                      }
+                  }
+                  num = TextView(this).apply {
+                      text = count.toString()
+                      setTextColor(Color.WHITE)
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                      typeface = Typeface.DEFAULT_BOLD
+                      gravity = Gravity.CENTER
+                  }
+                  val label = TextView(this).apply {
+                      text = "ZIKR"
+                      setTextColor(0xFFCFF5E6.toInt())
+                      setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                      typeface = Typeface.DEFAULT_BOLD
+                      letterSpacing = 0.08f
+                      gravity = Gravity.CENTER
+                  }
+                  root.addView(num)
+                  root.addView(label)
+
+                  val lp = WindowManager.LayoutParams(
+                      size, size,
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = prefs.getInt("x", (16 * d).toInt())
+                      y = prefs.getInt("y", (300 * d).toInt())
+                  }
+
+                  var sx = 0; var sy = 0; var tx = 0f; var ty = 0f
+                  var moved = false; var downT = 0L
+                  root.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY
+                              moved = false; downT = e.eventTime; true
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = e.rawX - tx
+                              val dy = e.rawY - ty
+                              if (abs(dx) > 10 * d || abs(dy) > 10 * d) moved = true
+                              if (moved) {
+                                  lp.x = sx + dx.toInt(); lp.y = sy + dy.toInt()
+                                  wm.updateViewLayout(root, lp)
+                              }
+                              true
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              if (moved) {
+                                  prefs.edit().putInt("x", lp.x).putInt("y", lp.y).apply()
+                              } else if (e.eventTime - downT > 700) {
+                                  setCount(0)
+                              } else {
+                                  setCount(count + 1)
+                                  buzz(count % target == 0)
+                              }
+                              true
+                          }
+                          else -> false
+                      }
+                  }
+                  wm.addView(root, lp)
+                  bubble = root
+              }
+
+              private fun setCount(n: Int) {
+                  count = n
+                  num.text = n.toString()
+                  prefs.edit().putInt("count", n).apply()
+              }
+
+              private fun buzz(long: Boolean) {
+                  val v = getSystemService(Vibrator::class.java) ?: return
+                  val fx = if (long) VibrationEffect.createWaveform(longArrayOf(0, 60, 40, 120), -1)
+                  else VibrationEffect.createOneShot(15, VibrationEffect.DEFAULT_AMPLITUDE)
+                  v.vibrate(fx)
+              }
+
+              override fun onDestroy() {
+                  bubble?.let { wm.removeView(it) }
+                  bubble = null
+                  super.onDestroy()
+              }
+          }
+          END_5
+      - name: APK yigʻish
+        working-directory: proj
+        run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zikr-apk
+          path: proj/build/outputs/apk/debug/app-debug.apk
